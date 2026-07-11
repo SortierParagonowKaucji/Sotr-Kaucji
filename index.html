@@ -1,6 +1,420 @@
 <!DOCTYPE html>
 <html lang="pl">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Kaucja Mobile</title>
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="./manifest.json">
+    <link rel="apple-touch-icon" href="./icon-192.png">
+    
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.344.0/dist/umd/lucide.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <style>
+        body {
+            font-family: 'Sora', sans-serif;
+            background-color: #1A1206;
+            color: #FFFDEB;
+            -webkit-tap-highlight-color: transparent;
+        }
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #CC953E !important;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./service-worker.js')
+                    .then(reg => console.log('Service Worker zarejestrowany!'))
+                    .catch(err => console.log('Błąd SW: ', err));
+            });
+        }
+
+        const PALETTE = {
+            amber: '#CC953E',
+            dark: '#1A1206',
+            gray: '#2C251A',
+            lightGray: '#3D3526',
+            textMuted: '#A39989',
+            red: '#EF4444',
+            green: '#10B981'
+        };
+
+        const Icon = ({ name, size = 24, color = "currentColor" }) => {
+            React.useEffect(() => {
+                if (window.lucide) {
+                    window.lucide.createIcons();
+                }
+            }, [name]);
+            return <i data-lucide={name} style={{ width: size, height: size, color: color, display: 'inline-block' }}></i>;
+        };
+
+        const App = () => {
+            const [receipts, setReceipts] = React.useState(() => {
+                const saved = localStorage.getItem('kaucja_receipts');
+                return saved ? JSON.parse(saved) : [];
+            });
+            const [showModal, setShowModal] = React.useState(false);
+            const [showDetailModal, setShowDetailModal] = React.useState(false);
+            const [selectedReceipt, setSelectedReceipt] = React.useState(null);
+            
+            // Stan formularza
+            const [title, setTitle] = React.useState('');
+            const [store, setStore] = React.useState('');
+            const [date, setDate] = React.useState(new Date().toISOString().split('T')[0]);
+            const [depositItems, setDepositItems] = React.useState([{ name: 'Butelka zwrotna', quantity: 1, price: 1.00 }]);
+            const [image, setImage] = React.useState(null);
+            const [uploading, setUploading] = React.useState(false);
+
+            React.useEffect(() => {
+                localStorage.setItem('kaucja_receipts', JSON.stringify(receipts));
+            }, [receipts]);
+
+            const handleAddDepositItem = () => {
+                setDepositItems([...depositItems, { name: '', quantity: 1, price: 1.00 }]);
+            };
+
+            const handleRemoveDepositItem = (index) => {
+                if (depositItems.length > 1) {
+                    setDepositItems(depositItems.filter((_, i) => i !== index));
+                }
+            };
+
+            const handleItemChange = (index, field, value) => {
+                const newItems = [...depositItems];
+                newItems[index][field] = value;
+                setDepositItems(newItems);
+            };
+
+            const handleFileChange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onloadend = () => {
+                        setImage(reader.result);
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            const handleSubmit = (e) => {
+                e.preventDefault();
+                if (!title || !store) return;
+
+                const totalDeposit = depositItems.reduce((sum, item) => sum + (item.quantity * parseFloat(item.price || 0)), 0);
+
+                const newReceipt = {
+                    id: Date.now().toString(),
+                    title,
+                    store,
+                    date,
+                    items: depositItems.map(item => ({
+                        ...item,
+                        quantity: parseInt(item.quantity) || 1,
+                        price: parseFloat(item.price) || 0
+                    })),
+                    totalDeposit,
+                    image,
+                    returned: false
+                };
+
+                setReceipts([newReceipt, ...receipts]);
+                
+                // Reset formularza
+                setTitle('');
+                setStore('');
+                setDate(new Date().toISOString().split('T')[0]);
+                setDepositItems([{ name: 'Butelka zwrotna', quantity: 1, price: 1.00 }]);
+                setImage(null);
+                setShowModal(false);
+            };
+
+            const toggleReturned = (id, e) => {
+                e.stopPropagation();
+                setReceipts(receipts.map(r => r.id === id ? { ...r, returned: !r.returned } : r));
+            };
+
+            const handleDelete = (id, e) => {
+                e.stopPropagation();
+                setReceipts(receipts.filter(r => r.id !== id));
+                setShowDetailModal(false);
+            };
+
+            const totalActiveDeposit = receipts
+                .filter(r => !r.returned)
+                .reduce((sum, r) => sum + r.totalDeposit, 0);
+
+            return (
+                <div className="min-h-screen p-4 pb-24 flex flex-col justify-between max-w-md mx-auto">
+                    <div>
+                        <header className="py-4 flex justify-between items-center border-b border-[#2C251A] mb-6">
+                            <div className="flex items-center gap-2">
+                                <div className="p-2 bg-[#2C251A] rounded-xl border border-amber-900/20">
+                                    <Icon name="receipt" size={24} color={PALETTE.amber} />
+                                </div>
+                                <h1 className="text-xl font-bold tracking-tight">Kaucja Mobile</h1>
+                            </div>
+                            <div className="text-right">
+                                <span className="text-xs text-[#A39989] block uppercase tracking-wider font-semibold">Suma kaucji</span>
+                                <span className="text-lg font-bold text-emerald-400">{totalActiveDeposit.toFixed(2)} zł</span>
+                            </div>
+                        </header>
+
+                        {receipts.length === 0 ? (
+                            <main className="flex-1 flex flex-col items-center justify-center py-20 text-center">
+                                <div className="bg-[#2C251A] p-8 rounded-2xl shadow-xl w-full border border-amber-900/20">
+                                    <div className="w-16 h-16 bg-[#1A1206] rounded-full flex items-center justify-center mx-auto mb-4 border border-amber-900/10">
+                                        <Icon name="archive" size={32} color={PALETTE.amber} />
+                                    </div>
+                                    <h2 className="text-lg font-semibold text-[#FFFDEB]">Brak paragonów</h2>
+                                    <p className="mt-2 text-sm text-[#A39989] leading-relaxed">
+                                        Aplikacja, w której masz wszystkie paragony i kaucje w jednym miejscu. Dodaj swój pierwszy paragon klikając na plus poniżej.
+                                    </p>
+                                </div>
+                            </main>
+                        ) : (
+                            <div className="space-y-3">
+                                {receipts.map(receipt => (
+                                    <div 
+                                        key={receipt.id}
+                                        onClick={() => { setSelectedReceipt(receipt); setShowDetailModal(true); }}
+                                        className={`p-4 rounded-2xl bg-[#2C251A] border transition-all active:scale-[0.99] flex justify-between items-center ${receipt.returned ? 'border-transparent opacity-50' : 'border-amber-900/10 shadow-md'}`}
+                                    >
+                                        <div className="flex items-center gap-3">
+                                            <div className={`p-3 rounded-xl flex items-center justify-center ${receipt.returned ? 'bg-[#1A1206] text-gray-500' : 'bg-[#1A1206] text-[#CC953E]'}`}>
+                                                <Icon name={receipt.returned ? "check-circle" : "clock"} size={22} />
+                                            </div>
+                                            <div>
+                                                <h3 className="font-semibold text-sm text-[#FFFDEB] line-clamp-1">{receipt.title}</h3>
+                                                <p className="text-xs text-[#A39989] flex items-center gap-1 mt-0.5">
+                                                    <span>{receipt.store}</span>
+                                                    <span>•</span>
+                                                    <span>{receipt.date}</span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <div className="text-right">
+                                                <span className={`text-sm font-bold block ${receipt.returned ? 'text-[#A39989] line-through' : 'text-emerald-400'}`}>
+                                                    +{receipt.totalDeposit.toFixed(2)} zł
+                                                </span>
+                                                <span className="text-[10px] text-[#A39989] block">
+                                                    {receipt.items.reduce((s, i) => s + i.quantity, 0)} szt.
+                                                </span>
+                                            </div>
+                                            <button 
+                                                onClick={(e) => toggleReturned(receipt.id, e)}
+                                                className={`p-2 rounded-lg transition-colors ${receipt.returned ? 'bg-emerald-500/10 text-emerald-400' : 'bg-[#1A1206] text-[#A39989] hover:bg-[#3D3526]'}`}
+                                            >
+                                                <Icon name="check" size={18} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Poprawiony przycisk dodawania */}
+                    <button onClick={() => setShowModal(true)} disabled={uploading} className="fixed bottom-8 right-8 rounded-full p-4 flex items-center justify-center transition-transform active:scale-95 disabled:opacity-50" style={{ backgroundColor: PALETTE.amber, boxShadow: "0px 24px 48px -12px rgba(204,149,62,0.35), 0px 8px 16px -4px rgba(204,149,62,0.2)" }} aria-label="Dodaj paragon">
+                        <Icon name="plus" size={28} color="#1A1206" />
+                    </button>
+
+                    {/* Modal formularza */}
+                    {showModal && (
+                        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                            <div className="bg-[#1A1206] w-full max-w-md rounded-t-3xl sm:rounded-3xl border border-amber-900/20 max-h-[90vh] overflow-y-auto no-scrollbar shadow-2xl flex flex-col">
+                                <div className="p-4 border-b border-[#2C251A] flex justify-between items-center sticky top-0 bg-[#1A1206] z-10">
+                                    <h2 className="text-lg font-bold">Nowy paragon z kaucją</h2>
+                                    <button onClick={() => setShowModal(false)} className="p-2 bg-[#2C251A] rounded-xl text-[#A39989]">
+                                        <Icon name="x" size={20} />
+                                    </button>
+                                </div>
+                                
+                                <form onSubmit={handleSubmit} className="p-5 space-y-4 flex-1">
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-1.5">Nazwa własna</label>
+                                        <input type="text" placeholder="np. Zakupy na imprezę, Grill u Marka" value={title} onChange={e => setTitle(e.target.value)} required className="w-full bg-[#2C251A] border border-amber-900/10 rounded-xl p-3 text-sm text-[#FFFDEB]" />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-1.5">Sklep</label>
+                                            <input type="text" placeholder="Biedronka, Lidl..." value={store} onChange={e => setStore(e.target.value)} required className="w-full bg-[#2C251A] border border-amber-900/10 rounded-xl p-3 text-sm text-[#FFFDEB]" />
+                                        </div>
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-1.5">Data zakupu</label>
+                                            <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="w-full bg-[#2C251A] border border-amber-900/10 rounded-xl p-3 text-sm text-[#FFFDEB]" />
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <div className="flex justify-between items-center mb-2">
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-[#A39989]">Pozycje objęte kaucją</label>
+                                            <button type="button" onClick={handleAddDepositItem} className="text-xs text-[#CC953E] font-medium flex items-center gap-1 bg-[#2C251A] px-2.5 py-1 rounded-lg border border-amber-900/10">
+                                                <Icon name="plus" size={14} /> Dodaj
+                                            </button>
+                                        </div>
+                                        
+                                        <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar pr-1">
+                                            {depositItems.map((item, index) => (
+                                                <div key={index} className="flex gap-2 items-center bg-[#2C251A] p-2.5 rounded-xl border border-amber-900/5">
+                                                    <input type="text" placeholder="Nazwa przedmiotu" value={item.name} onChange={e => handleItemChange(index, 'name', e.target.value)} required className="flex-1 bg-[#1A1206] border border-transparent rounded-lg p-2 text-xs text-[#FFFDEB]" />
+                                                    <input type="number" placeholder="Ilość" min="1" value={item.quantity} onChange={e => handleItemChange(index, 'quantity', e.target.value)} required className="w-14 bg-[#1A1206] border border-transparent rounded-lg p-2 text-xs text-[#FFFDEB] text-center" />
+                                                    <input type="number" placeholder="Cena" step="0.01" min="0" value={item.price} onChange={e => handleItemChange(index, 'price', e.target.value)} required className="w-16 bg-[#1A1206] border border-transparent rounded-lg p-2 text-xs text-[#FFFDEB] text-center" />
+                                                    {depositItems.length > 1 && (
+                                                        <button type="button" onClick={() => handleRemoveDepositItem(index)} className="text-red-400 p-1">
+                                                            <Icon name="trash-2" size={16} />
+                                                        </button>
+                                                    )}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-1.5">Zdjęcie paragonu (opcjonalnie)</label>
+                                        <div className="relative border-2 border-dashed border-amber-900/20 rounded-xl p-4 bg-[#2C251A] flex flex-col items-center justify-center text-center cursor-pointer min-h-24">
+                                            <input type="file" accept="image/*" onChange={handleFileChange} className="absolute inset-0 opacity-0 cursor-pointer" />
+                                            {image ? (
+                                                <div className="flex items-center gap-2 text-emerald-400 text-xs font-medium">
+                                                    <Icon name="image" size={18} /> Zdjęcie załadowane pomyślnie
+                                                </div>
+                                            ) : (
+                                                <>
+                                                    <Icon name="camera" size={24} color={PALETTE.textMuted} />
+                                                    <span className="text-xs text-[#A39989] mt-1.5">Kliknij, aby zrobić zdjęcie lub wybrać plik</span>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    <button type="submit" className="w-full bg-[#CC953E] text-[#1A1206] font-bold p-3.5 rounded-xl text-sm transition-transform active:scale-[0.98] shadow-lg shadow-amber-900/10 flex items-center justify-center gap-2 mt-2">
+                                        <Icon name="save" size={18} /> Zapisz paragon
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Modal szczegółów */}
+                    {showDetailModal && selectedReceipt && (
+                        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+                            <div className="bg-[#1A1206] w-full max-w-md rounded-t-3xl sm:rounded-3xl border border-amber-900/20 max-h-[90vh] overflow-y-auto no-scrollbar shadow-2xl flex flex-col">
+                                <div className="p-4 border-b border-[#2C251A] flex justify-between items-center sticky top-0 bg-[#1A1206] z-10">
+                                    <h2 className="text-lg font-bold line-clamp-1">{selectedReceipt.title}</h2>
+                                    <button onClick={() => setShowDetailModal(false)} className="p-2 bg-[#2C251A] rounded-xl text-[#A39989]">
+                                        <Icon name="x" size={20} />
+                                    </button>
+                                </div>
+
+                                <div className="p-5 space-y-4">
+                                    <div className="flex justify-between items-center bg-[#2C251A] p-4 rounded-2xl border border-amber-900/5">
+                                        <div>
+                                            <span className="text-xs text-[#A39989] uppercase tracking-wider block font-semibold">Status kaucji</span>
+                                            <span className={`text-sm font-bold flex items-center gap-1.5 mt-0.5 ${selectedReceipt.returned ? 'text-emerald-400' : 'text-amber-400'}`}>
+                                                <Icon name={selectedReceipt.returned ? "check-circle" : "clock"} size={16} />
+                                                {selectedReceipt.returned ? 'Zwrócona' : 'Oczekuje na zwrot'}
+                                            </span>
+                                        </div>
+                                        <div className="text-right">
+                                            <span className="text-xs text-[#A39989] uppercase tracking-wider block font-semibold">Wartość</span>
+                                            <span className="text-lg font-black text-emerald-400">{selectedReceipt.totalDeposit.toFixed(2)} zł</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4 text-sm px-1">
+                                        <div>
+                                            <span className="text-xs text-[#A39989] block">Miejsce zakupu:</span>
+                                            <span className="font-semibold text-[#FFFDEB]">{selectedReceipt.store}</span>
+                                        </div>
+                                        <div>
+                                            <span className="text-xs text-[#A39989] block">Data operacji:</span>
+                                            <span className="font-semibold text-[#FFFDEB]">{selectedReceipt.date}</span>
+                                        </div>
+                                    </div>
+
+                                    <div className="border-t border-[#2C251A] pt-4">
+                                        <span className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-2 px-1">Zestawienie pozycji</span>
+                                        <div className="bg-[#2C251A] rounded-2xl p-3 divide-y divide-[#1A1206]/50 border border-amber-900/5">
+                                            {selectedReceipt.items.map((item, idx) => (
+                                                <div key={idx} className="flex justify-between items-center py-2.5 first:pt-0 last:pb-0">
+                                                    <div>
+                                                        <p className="text-sm font-medium text-[#FFFDEB]">{item.name}</p>
+                                                        <p className="text-xs text-[#A39989] mt-0.5">{item.quantity} szt. × {item.price.toFixed(2)} zł</p>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-[#FFFDEB]">{(item.quantity * item.price).toFixed(2)} zł</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {selectedReceipt.image && (
+                                        <div className="border-t border-[#2C251A] pt-4">
+                                            <span className="text-xs font-semibold uppercase tracking-wider text-[#A39989] block mb-2 px-1">Zdjęcie dowodu zakupu</span>
+                                            <div className="rounded-2xl overflow-hidden border border-amber-900/10 max-h-64 bg-[#2C251A] flex items-center justify-center shadow-inner">
+                                                <img src={selectedReceipt.image} alt="Paragon" className="w-full object-contain h-full max-h-64" />
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="flex gap-2 border-t border-[#2C251A] pt-4 mt-2">
+                                        <button 
+                                            onClick={(e) => { toggleReturned(selectedReceipt.id, e); setShowDetailModal(false); }}
+                                            className={`flex-1 p-3.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 transition-transform active:scale-[0.98] ${selectedReceipt.returned ? 'bg-[#2C251A] text-[#FFFDEB] border border-amber-900/10' : 'bg-emerald-500 text-[#1A1206] shadow-lg shadow-emerald-900/10'}`}
+                                        >
+                                            <Icon name={selectedReceipt.returned ? "refresh-cw" : "check"} size={18} />
+                                            {selectedReceipt.returned ? 'Oznacz jako nieodebrane' : 'Odbierz kaucję'}
+                                        </button>
+                                        <button 
+                                            onClick={(e) => handleDelete(selectedReceipt.id, e)}
+                                            className="p-3.5 bg-red-500/10 text-red-400 border border-red-500/20 rounded-xl hover:bg-red-500/20 transition-colors active:scale-[0.98]"
+                                            title="Usuń dokument"
+                                        >
+                                            <Icon name="trash-2" size={18} />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+    
+    <script src="https://unpkg.com/react@17/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@17/umd/react-dom.development.js" crossorigin></script>
+</body>
+</html>
+
+
+sob., 11 lip 2026, 22:23 użytkownik Szymon Szyszlak <szyszlakszymon@gmail.com> napisał:
+<!DOCTYPE html>
+<html lang="pl">
+<head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>Kaucja — portfel paragonów</title>
