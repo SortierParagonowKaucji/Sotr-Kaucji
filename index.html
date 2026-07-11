@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Kaucja — portfel paragonów</title>
+<meta name="theme-color" content="#0B1D16" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="manifest" href="./manifest.json" />
+<link rel="icon" href="./icon-192.png" />
+<link rel="apple-touch-icon" href="./icon-192.png" />
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+  html, body { margin: 0; padding: 0; background: #0B1D16; overscroll-behavior-y: none; }
+  input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.8) sepia(1) saturate(2); opacity: 0.7; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script>
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./service-worker.js").catch(() => {});
+    });
+  }
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// -----------------------------------------------------------------------
+// Trwały zapis w telefonie (IndexedDB) — działa offline, nie znika po
+// zamknięciu appki, nie zależy od żadnej zewnętrznej usługi.
+// -----------------------------------------------------------------------
+const DB_NAME = "kaucja-db";
+const STORE = "receipts";
+
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      req.result.createObjectStore(STORE, { keyPath: "id" });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbGetAll() {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readonly");
+    const req = tx.objectStore(STORE).getAll();
+    req.onsuccess = () => resolve(req.result || []);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function dbPut(item) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(item);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function dbDelete(id) {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+// -----------------------------------------------------------------------
+// helpers
+// -----------------------------------------------------------------------
+
+function compressImage(file, maxWidth = 900, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.onerror = reject;
+      img.src = e.target.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function formatDateShort(ts) {
+  return new Date(ts).toLocaleDateString("pl-PL", { day: "2-digit", month: "short" });
+}
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const target = new Date(dateStr);
+  target.setHours(0, 0, 0, 0);
+  return Math.round((target - today) / (1000 * 60 * 60 * 24));
+}
+
+function defaultExpiry() {
+  const d = new Date();
+  d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+const PALETTE = {
+  bg: "#0B1D16",
+  bgGradA: "#0E241B",
+  bgGradB: "#08140F",
+  ink: "#F2EEE1",
+  muted: "#93A69A",
+  hairline: "rgba(242,238,225,0.10)",
+  glass: "rgba(255,255,255,0.045)",
+  emerald: "#3FA57A",
+  emeraldDeep: "#1F6E4C",
+  amber: "#CC9552",
+  amberDeep: "#9C6E2E",
+  garnet: "#AD3A4C",
+  garnetDeep: "#7A2536",
+  slate: "#7C8A82",
+};
+
+function statusColor(status, days) {
+  if (status === "used") return { c: PALETTE.slate };
+  if (days !== null && days < 0) return { c: PALETTE.garnet };
+  if (days !== null && days <= 3) return { c: PALETTE.amber };
+  return { c: PALETTE.emerald };
+}
+
+function statusText(status, days) {
+  if (status === "used") return "Wykorzystany";
+  if (days === null) return "Bez terminu";
+  if (days < 0) return "Termin minął";
+  if (days === 0) return "Ostatni dzień";
+  if (days === 1) return "Jeszcze 1 dzień";
+  return `Jeszcze ${days} dni`;
+}
+
+// -----------------------------------------------------------------------
+// proste, własne ikony SVG (bez zewnętrznych zależności)
+// -----------------------------------------------------------------------
+function Icon({ name, size = 18, color = "currentColor", strokeWidth = 2 }) {
+  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: color, strokeWidth, strokeLinecap: "round", strokeLinejoin: "round" };
+  switch (name) {
+    case "camera":
+      return <svg {...common}><path d="M4 8h3l1.5-2h7L17 8h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="14" r="3.5"/></svg>;
+    case "check":
+      return <svg {...common}><polyline points="20 6 9 17 4 12"/></svg>;
+    case "undo":
+      return <svg {...common}><path d="M3 10h10a5 5 0 0 1 0 10H8"/><polyline points="7 5 3 10 7 15"/></svg>;
+    case "trash":
+      return <svg {...common}><polyline points="3 6 5 6 21 6"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1L5 6"/></svg>;
+    case "plus":
+      return <svg {...common}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>;
+    case "x":
+      return <svg {...common}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>;
+    case "calendar":
+      return <svg {...common}><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="16" y1="3" x2="16" y2="7"/><line x1="8" y1="3" x2="8" y2="7"/><line x1="3" y1="10" x2="21" y2="10"/></svg>;
+    default:
+      return null;
+  }
+}
+
+// -----------------------------------------------------------------------
+// foliowa pieczęć — pierścień pokazujący liczbę dni do terminu
+// -----------------------------------------------------------------------
+function FoilSeal({ status, days, size = 60 }) {
+  const radius = (size - 8) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const { c } = statusColor(status, days);
+
+  let fraction = 1;
+  if (status === "used") fraction = 1;
+  else if (days === null) fraction = 1;
+  else if (days < 0) fraction = 0;
+  else fraction = Math.min(1, days / 30);
+
+  const offset = circumference * (1 - fraction);
+
+  let center;
+  if (status === "used") center = <Icon name="check" size={20} color={c} strokeWidth={2.5} />;
+  else if (days !== null && days < 0) center = <Icon name="x" size={16} color={c} strokeWidth={2.5} />;
+  else center = <span style={{ color: c, fontFamily: "'Fraunces', serif" }} className="text-[17px] font-semibold leading-none">{days === null ? "∞" : days}</span>;
+
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle at 32% 28%, rgba(255,255,255,0.18), rgba(0,0,0,0.35) 72%)", boxShadow: "0 3px 10px rgba(0,0,0,0.45), inset 0 0 0 1px rgba(255,255,255,0.08)" }} />
+      <svg width={size} height={size} className="absolute -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="rgba(255,255,255,0.12)" strokeWidth="2.5" fill="none" />
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke={c} strokeWidth="2.5" fill="none" strokeDasharray={circumference} strokeDashoffset={offset} strokeLinecap="round" />
+      </svg>
+      <div className="relative">{center}</div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------
+// karta paragonu
+// -----------------------------------------------------------------------
+function ImageLightbox({ image, onClose }) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center p-4" style={{ background: "rgba(4,10,7,0.94)" }} onClick={onClose}>
+      <button onClick={onClose} className="absolute top-5 right-5 p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)", color: PALETTE.ink }} aria-label="Zamknij podgląd">
+        <Icon name="x" size={22} />
+      </button>
+      <img src={image} alt="Podgląd paragonu" className="max-w-full max-h-full rounded-xl object-contain" style={{ boxShadow: "0 20px 60px rgba(0,0,0,0.6)" }} onClick={(e) => e.stopPropagation()} />
+    </div>
+  );
+}
+
+function ReceiptCard({ receipt, onToggle, onDelete, onOpenImage }) {
+  const used = receipt.status === "used";
+  const days = daysUntil(receipt.expiresAt);
+  const { c } = statusColor(receipt.status, days);
+
+  return (
+    <div className="relative mb-5 rounded-2xl overflow-hidden" style={{ background: PALETTE.glass, backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)", border: `1px solid ${PALETTE.hairline}`, boxShadow: "0 12px 28px rgba(0,0,0,0.35)" }}>
+      <div className="relative">
+        <img src={receipt.image} alt="Paragon kaucyjny" onClick={() => onOpenImage(receipt.image)} className={`w-full h-44 object-cover cursor-pointer ${used ? "grayscale opacity-60" : ""}`} />
+        <div className="absolute inset-0" style={{ background: "linear-gradient(180deg, rgba(11,29,22,0) 45%, rgba(11,29,22,0.92) 100%)" }} />
+        <button onClick={() => onDelete(receipt.id)} className="absolute top-3 left-3 bg-black/35 hover:bg-black/55 text-[#F2EEE1]/90 p-1.5 rounded-full transition-colors backdrop-blur-sm" aria-label="Usuń">
+          <Icon name="trash" size={13} />
+        </button>
+        <div className="absolute -bottom-6 right-4"><FoilSeal status={receipt.status} days={days} /></div>
+        <div className="absolute bottom-3 left-4 right-16">
+          <div className="text-[10px] tracking-[0.18em] uppercase font-medium mb-0.5" style={{ color: c, fontFamily: "'Manrope', sans-serif" }}>{statusText(receipt.status, days)}</div>
+        </div>
+      </div>
+      <div className="pt-9 pb-4 px-4">
+        <div className="flex items-center justify-between text-[11px] mb-3" style={{ color: PALETTE.muted, fontFamily: "'JetBrains Mono', monospace" }}>
+          <span>dodano {formatDateShort(receipt.addedAt)}</span>
+          {receipt.expiresAt && <span>ważny do {formatDateShort(receipt.expiresAt)}</span>}
+        </div>
+        <div className="h-px mb-3" style={{ background: PALETTE.hairline }} />
+        {used ? (
+          <button onClick={() => onToggle(receipt.id)} className="w-full flex items-center justify-center gap-1.5 text-[13px] font-medium py-2.5 rounded-xl transition-colors" style={{ border: `1px solid ${PALETTE.hairline}`, color: PALETTE.ink, fontFamily: "'Manrope', sans-serif" }}>
+            <Icon name="undo" size={14} /> Cofnij oznaczenie
+          </button>
+        ) : (
+          <button onClick={() => onToggle(receipt.id)} className="w-full flex items-center justify-center gap-1.5 text-[13px] font-semibold py-2.5 rounded-xl transition-transform active:scale-[0.98]" style={{ background: `linear-gradient(135deg, ${PALETTE.amber}, ${PALETTE.amberDeep})`, color: "#1A1206", fontFamily: "'Manrope', sans-serif" }}>
+            <Icon name="check" size={14} /> Oznacz jako wykorzystany
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------
+// modal dodawania paragonu
+// -----------------------------------------------------------------------
+function AddReceiptModal({ onClose, onSave }) {
+  const [preview, setPreview] = useState(null);
+  const [rawFile, setRawFile] = useState(null);
+  const [expiresAt, setExpiresAt] = useState(defaultExpiry());
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef(null);
+
+  const pickFile = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRawFile(file);
+    const reader = new FileReader();
+    reader.onload = (ev) => setPreview(ev.target.result);
+    reader.readAsDataURL(file);
+  };
+
+  const handleSave = async () => {
+    if (!rawFile) return;
+    setSaving(true);
+    await onSave(rawFile, expiresAt);
+    setSaving(false);
+  };
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end sm:items-center justify-center" style={{ background: "rgba(4,10,7,0.72)", backdropFilter: "blur(3px)" }}>
+      <div className="w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-6 pb-8" style={{ background: `linear-gradient(160deg, ${PALETTE.bgGradA}, ${PALETTE.bgGradB})`, border: `1px solid ${PALETTE.hairline}`, boxShadow: "0 -20px 60px rgba(0,0,0,0.5)" }}>
+        <div className="flex items-center justify-between mb-5">
+          <h2 style={{ fontFamily: "'Fraunces', serif", color: PALETTE.ink }} className="text-xl font-medium">Nowy paragon</h2>
+          <button onClick={onClose} className="p-1 rounded-full" style={{ color: PALETTE.muted }} aria-label="Zamknij"><Icon name="x" size={20} /></button>
+        </div>
+
+        <input type="file" accept="image/*" capture="environment" ref={inputRef} onChange={pickFile} style={{ position: "absolute", width: 1, height: 1, opacity: 0, overflow: "hidden", pointerEvents: "none" }} />
+
+        {preview ? (
+          <div className="relative mb-5">
+            <img src={preview} alt="Podgląd" className="w-full h-48 object-cover rounded-2xl" style={{ border: `1px solid ${PALETTE.hairline}` }} />
+            <button onClick={() => inputRef.current?.click()} className="absolute bottom-3 right-3 text-[11px] font-medium px-3 py-1.5 rounded-full backdrop-blur-md" style={{ background: "rgba(0,0,0,0.45)", color: PALETTE.ink, fontFamily: "'Manrope', sans-serif" }}>Zmień zdjęcie</button>
+          </div>
+        ) : (
+          <button onClick={() => inputRef.current?.click()} className="w-full h-48 mb-5 rounded-2xl flex flex-col items-center justify-center gap-2 transition-colors" style={{ border: `1.5px dashed ${PALETTE.hairline}`, color: PALETTE.muted }}>
+            <Icon name="camera" size={26} />
+            <span className="text-[13px] font-medium" style={{ fontFamily: "'Manrope', sans-serif" }}>Zrób lub wybierz zdjęcie</span>
+          </button>
+        )}
+
+        <label className="block text-[10px] tracking-[0.18em] uppercase font-medium mb-2" style={{ color: PALETTE.muted, fontFamily: "'Manrope', sans-serif" }}>Termin ważności</label>
+        <div className="relative mb-6">
+          <div className="absolute left-4 top-1/2 -translate-y-1/2" style={{ color: PALETTE.amber }}><Icon name="calendar" size={16} /></div>
+          <input type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} className="w-full pl-11 pr-4 py-3 rounded-xl text-sm focus:outline-none" style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${PALETTE.hairline}`, color: PALETTE.ink, fontFamily: "'JetBrains Mono', monospace", colorScheme: "dark" }} />
+        </div>
+
+        <button onClick={handleSave} disabled={!rawFile || saving} className="w-full flex items-center justify-center gap-2 font-semibold py-3.5 rounded-xl disabled:opacity-40 transition-transform active:scale-[0.98]" style={{ background: `linear-gradient(135deg, ${PALETTE.amber}, ${PALETTE.amberDeep})`, color: "#1A1206", fontFamily: "'Manrope', sans-serif" }}>
+          <Icon name="plus" size={18} /> {saving ? "Zapisywanie…" : "Dodaj do portfela"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------
+// aplikacja główna
+// -----------------------------------------------------------------------
+function KaucjaApp() {
+  const [receipts, setReceipts] = useState([]);
+  const [filter, setFilter] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState(null);
+  const toastTimer = useRef(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const items = await dbGetAll();
+        setReceipts(items.sort((a, b) => b.addedAt - a.addedAt));
+      } catch (e) {
+        console.error("Nie udało się wczytać danych", e);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  const showToast = useCallback((msg, action) => {
+    clearTimeout(toastTimer.current);
+    setToast({ msg, action });
+    toastTimer.current = setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const handleAddReceipt = async (file, expiresAt) => {
+    setUploading(true);
+    try {
+      const image = await compressImage(file);
+      const receipt = { id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, image, status: "unused", addedAt: Date.now(), expiresAt: expiresAt || null };
+      setReceipts((prev) => [receipt, ...prev]);
+      await dbPut(receipt);
+      setShowModal(false);
+    } catch (err) {
+      console.error(err);
+      showToast("Nie udało się dodać zdjęcia");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const toggleStatus = async (id) => {
+    let updated;
+    setReceipts((prev) => prev.map((r) => {
+      if (r.id === id) { updated = { ...r, status: r.status === "used" ? "unused" : "used" }; return updated; }
+      return r;
+    }));
+    if (updated) {
+      await dbPut(updated);
+      if (updated.status === "used") showToast("Oznaczono jako wykorzystany", { label: "Cofnij", onClick: () => toggleStatus(id) });
+    }
+  };
+
+  const deleteReceipt = async (id) => {
+    setReceipts((prev) => prev.filter((r) => r.id !== id));
+    try { await dbDelete(id); } catch (e) { console.error("Błąd usuwania", e); }
+  };
+
+  const sortByExpiry = (a, b) => {
+    if (!a.expiresAt) return 1;
+    if (!b.expiresAt) return -1;
+    return new Date(a.expiresAt) - new Date(b.expiresAt);
+  };
+
+  const unused = receipts.filter((r) => r.status !== "used").sort(sortByExpiry);
+  const used = receipts.filter((r) => r.status === "used").sort((a, b) => b.addedAt - a.addedAt);
+
+  let shown;
+  if (filter === "unused") shown = unused;
+  else if (filter === "used") shown = used;
+  else shown = [...unused, ...used];
+
+  const expiringSoon = unused.filter((r) => { const d = daysUntil(r.expiresAt); return d !== null && d >= 0 && d <= 3; }).length;
+
+  return (
+    <div className="min-h-screen" style={{ background: `radial-gradient(circle at 50% -10%, ${PALETTE.bgGradA} 0%, ${PALETTE.bg} 45%, ${PALETTE.bgGradB} 100%)`, fontFamily: "'Manrope', sans-serif" }}>
+      <div className="px-5 pt-8 pb-5">
+        <div className="flex items-center gap-3 mb-1">
+          <div className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 text-base" style={{ background: `linear-gradient(135deg, ${PALETTE.emerald}, ${PALETTE.emeraldDeep})`, boxShadow: "0 2px 8px rgba(0,0,0,0.4), inset 0 0 0 1px rgba(255,255,255,0.15)" }}>
+            ♻️
+          </div>
+          <div>
+            <h1 style={{ fontFamily: "'Fraunces', serif", color: PALETTE.ink }} className="text-[22px] leading-none font-medium tracking-tight">Kaucja</h1>
+            <p className="text-[11px] mt-1 tracking-wide" style={{ color: PALETTE.muted, fontFamily: "'JetBrains Mono', monospace" }}>Twój portfel paragonów</p>
+          </div>
+        </div>
+
+        {expiringSoon > 0 && (
+          <div className="mt-4 px-3.5 py-2.5 rounded-xl text-[12px] flex items-center gap-2" style={{ background: "rgba(204,149,82,0.12)", border: `1px solid rgba(204,149,82,0.25)`, color: PALETTE.amber }}>
+            {expiringSoon === 1 ? "1 paragon traci ważność w ciągu 3 dni" : `${expiringSoon} paragony tracą ważność w ciągu 3 dni`}
+          </div>
+        )}
+
+        <div className="mt-5 flex gap-2">
+          <button onClick={() => setFilter((f) => (f === "unused" ? null : "unused"))} className="flex-1 text-[13px] font-medium py-2.5 rounded-full transition-all" style={filter === "unused" ? { background: `linear-gradient(135deg, ${PALETTE.emerald}, ${PALETTE.emeraldDeep})`, color: "#0B1D16" } : { background: "rgba(255,255,255,0.045)", border: `1px solid ${PALETTE.hairline}`, color: PALETTE.muted }}>
+            Ważne · {unused.length}
+          </button>
+          <button onClick={() => setFilter((f) => (f === "used" ? null : "used"))} className="flex-1 text-[13px] font-medium py-2.5 rounded-full transition-all" style={filter === "used" ? { background: `linear-gradient(135deg, ${PALETTE.emerald}, ${PALETTE.emeraldDeep})`, color: "#0B1D16" } : { background: "rgba(255,255,255,0.045)", border: `1px solid ${PALETTE.hairline}`, color: PALETTE.muted }}>
+            Wykorzystane · {used.length}
+          </button>
+        </div>
+        {filter && (
+          <button onClick={() => setFilter(null)} className="mt-2 text-[11px] tracking-wide" style={{ color: PALETTE.muted, fontFamily: "'JetBrains Mono', monospace" }}>
+            × wyczyść filtr, pokaż wszystkie
+          </button>
+        )}
+      </div>
+
+      <div className="px-5 pb-28 max-w-md mx-auto">
+        {loading ? (
+          <div className="text-center pt-20 text-[13px]" style={{ color: PALETTE.muted, fontFamily: "'JetBrains Mono', monospace" }}>wczytywanie…</div>
+        ) : shown.length === 0 ? (
+          <div className="text-center pt-20 px-6">
+            <div className="w-14 h-14 rounded-full mx-auto mb-4 flex items-center justify-center" style={{ border: `1px solid ${PALETTE.hairline}`, color: PALETTE.muted }}>
+              <Icon name="calendar" size={22} />
+            </div>
+            <p style={{ fontFamily: "'Fraunces', serif", color: PALETTE.ink }} className="text-[16px] mb-1.5">{filter === "used" ? "Brak wykorzystanych" : "Portfel jest pusty"}</p>
+            <p className="text-[13px]" style={{ color: PALETTE.muted }}>{filter === "used" ? "Wykorzystane paragony pojawią się tutaj." : "Dodaj zdjęcie paragonu przyciskiem poniżej."}</p>
+          </div>
+        ) : (
+          shown.map((r) => <ReceiptCard key={r.id} receipt={r} onToggle={toggleStatus} onDelete={deleteReceipt} onOpenImage={setLightboxImage} />)
+        )}
+      </div>
+
+      <button onClick={() => setShowModal(true)} disabled={uploading} className="fixed bottom-6 right-6 rounded-full w-16 h-16 flex items-center justify-center transition-transform active:scale-95 disabled:opacity-60" style={{ background: `linear-gradient(135deg, ${PALETTE.amber}, ${PALETTE.amberDeep})`, boxShadow: "0 8px 24px rgba(204,149,82,0.35), inset 0 0 0 1px rgba(255,255,255,0.2)" }} aria-label="Dodaj paragon">
+        <Icon name="plus" size={28} color="#1A1206" />
+      </button>
+
+      {showModal && <AddReceiptModal onClose={() => setShowModal(false)} onSave={handleAddReceipt} />}
+      {lightboxImage && <ImageLightbox image={lightboxImage} onClose={() => setLightboxImage(null)} />}
+
+      {toast && (
+        <div className="fixed bottom-28 left-1/2 -translate-x-1/2 text-[13px] px-4 py-3 rounded-xl flex items-center gap-4 max-w-[90%] backdrop-blur-md" style={{ background: "rgba(20,40,30,0.9)", border: `1px solid ${PALETTE.hairline}`, color: PALETTE.ink }}>
+          <span>{toast.msg}</span>
+          {toast.action && (
+            <button onClick={() => { toast.action.onClick(); setToast(null); }} className="font-semibold uppercase text-[11px] tracking-wide" style={{ color: PALETTE.amber }}>{toast.action.label}</button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<KaucjaApp />);
+</script>
+</body>
+</html>
