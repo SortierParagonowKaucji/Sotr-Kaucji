@@ -35,7 +35,7 @@
   }
 </script>
 
-<script type="text/babel" data-presets="react">
+<script type="text/babel" data-presets="react" data-type="module">
 const { useState, useEffect, useRef, useCallback } = React;
 
 // -----------------------------------------------------------------------
@@ -236,6 +236,9 @@ function ImageLightbox({ image, onClose }) {
   );
 }
 
+// -----------------------------------------------------------------------
+// karta paragonu
+// -----------------------------------------------------------------------
 function ReceiptCard({ receipt, onToggle, onDelete, onOpenImage }) {
   const used = receipt.status === "used";
   const days = daysUntil(receipt.expiresAt);
@@ -467,7 +470,7 @@ function KaucjaApp() {
         )}
       </div>
 
-      <button onClick={() => setShowModal(true)} disabled={uploading} className="fixed bottom-6 right-6 rounded-full w-16 h-16 flex items-center justify-center transition-transform active:scale-95 disabled:opacity-60" style={{ background: `linear-gradient(135deg, ${PALETTE.amber}, ${PALETTE.amberDeep})`, boxShadow: "0 8px 24px rgba(204,149,82,0.35), inset 0 0 0 1px rgba(255,255,255,0.2)" }} aria-label="Dodaj paragon">
+      <button onClick={() => setShowModal(true)} disabled={uploading} className="fixed bottom-6 right-6 rounded-full w-16 h-16 flex items-center justify-center transition-transform active:scale-95 disabled:opacity-60" style={{ background: `linear-gradient(135deg, ${PALETTE.amber}, ${PALETTE.amberDeep})`, boxShadow: "0 8px 24px rgba(204,149,82,0.35), inset 0 0 0 1px rgba(255,255,255,0.2)", aria-label="Dodaj paragon" }}>
         <Icon name="plus" size={28} color="#1A1206" />
       </button>
 
